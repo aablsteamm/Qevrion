@@ -1506,28 +1506,28 @@ function Loader:_ensureLabel(line)
 	return label
 end
 
+-- typing pace, so the steps can actually be read
+local TYPE_DELAY = 0.012
+local STEP_PAUSE = 0.12
+
 function Loader:_work()
 	while #self._queue > 0 and not self._destroyed do
 		local job = table.remove(self._queue, 1)
 		local line, segment = job.line, job.segment
 		local label = self:_ensureLabel(line)
 		line.segments[#line.segments + 1] = segment
-		-- keeps up when a lot of lines are waiting
-		local backlog = #self._queue
-		local perFrame = backlog > 8 and 6 or backlog > 4 and 3 or 1
 		local total = #segment.text
 		for index = 1, total do
 			if self._destroyed then return end
 			line.typed += 1
 			label.Text = renderSegments(line.segments, line.typed, true)
 			local char = segment.text:sub(index, index)
-			if index % perFrame == 0 then
-				task.wait()
-				if perFrame == 1 and (char == "." or char == "," or char == ":") and math.random() < 0.4 then task.wait() end
-			end
+			task.wait(TYPE_DELAY)
+			if char == "." or char == "," or char == ":" then task.wait(TYPE_DELAY * 4) end
 		end
 		label.Text = renderSegments(line.segments, line.typed, false)
 		self.Tail = line
+		task.wait(STEP_PAUSE)
 	end
 	self._typing = false
 end
@@ -1540,6 +1540,7 @@ end
 function Loader:Step(text)
 	if self._destroyed then return setmetatable({ loader = self, done = true }, Step) end
 	if self.Pending then self.Pending:Ok() end
+	self:Flush(8) -- the real work waits for the typing, so the steps are visible
 	local line = self:_newLine()
 	local step = setmetatable({ loader = self, line = line, done = false }, Step)
 	self.Pending = step
@@ -1551,6 +1552,7 @@ end
 function Loader:Info(text, kind)
 	if self._destroyed then return end
 	if self.Pending then self.Pending:Ok() end
+	self:Flush(8)
 	self:_push(self:_newLine(), { text = tostring(text), color = kind and TAG_COLORS[kind] or nil })
 end
 
@@ -1588,7 +1590,7 @@ function Loader:Close(holdSeconds)
 	self._closing = true
 	if self.Pending then self.Pending:Ok() end
 	self:Flush()
-	task.wait(holdSeconds or 0.7)
+	task.wait(holdSeconds or 1.0)
 	if self._destroyed then return end
 	local menu = self.Gui.fader.LoadingMenu
 	tween(self.Gui.fader, 0.35, { GroupTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
