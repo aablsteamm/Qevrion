@@ -144,10 +144,27 @@ local function textLabel(parent, props)
 end
 
 local GuiService = game:GetService("GuiService")
+local RunService = game:GetService("RunService")
 
 -- AbsolutePosition is measured from below the top bar, GetMouseLocation from the top of the screen
 local function mouseLocation()
 	return UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
+end
+
+-- an icon can be an asset id, an "rbxassetid://" string, a file in the executor workspace, or { File = path, Id = id } (file first)
+local function iconUri(icon)
+	if type(icon) == "table" then
+		return (icon.File and iconUri(icon.File)) or (icon.Id and iconUri(icon.Id)) or nil
+	end
+	if type(icon) == "number" then return "rbxassetid://" .. icon end
+	if type(icon) == "string" then
+		if icon:match("^rbxassetid://") then return icon end
+		if isfile and getcustomasset and isfile(icon) then
+			local ok, uri = pcall(getcustomasset, icon)
+			if ok and type(uri) == "string" and uri ~= "" then return uri end
+		end
+	end
+	return nil
 end
 
 -- a point in AbsolutePosition space as a Position inside the window's ScreenGui
@@ -259,6 +276,7 @@ function Element:SetVisible(visible) self.Row.Visible = visible and true or fals
 function Element:Destroy()
 	if self.Destroyed then return end
 	self.Destroyed = true
+	self:_setCursorFree(false)
 	if self.Flag and self.Window.Elements[self.Flag] == self then
 		self.Window.Elements[self.Flag] = nil
 		self.Window.Flags[self.Flag] = nil
@@ -1033,12 +1051,19 @@ function Window:CreateTab(name, icon)
 	local hasIcon = false
 	-- the design's button is a plain white square with an ImageLabel (75%) inside it: the icon goes there
 	local iconLabel = button:FindFirstChild("ImageLabel") or button
-	if type(icon) == "number" then
-		applyImage(iconLabel, "rbxassetid://" .. icon)
+	local uri = iconUri(icon)
+	if uri then
+		applyImage(iconLabel, uri)
 		hasIcon = true
-	elseif type(icon) == "string" and icon:match("^rbxassetid://") then
-		applyImage(iconLabel, icon)
-		hasIcon = true
+		if uri:match("^rbxassetid://") then
+			-- an asset the client may not be allowed to read never loads: show the name instead of an empty square
+			task.delay(8, function()
+				if self.Destroyed or not iconLabel.Parent or iconLabel.IsLoaded then return end
+				iconLabel.Visible = false
+				local caption = button:FindFirstChild("caption")
+				if caption then caption.Visible = true end
+			end)
+		end
 	end
 	local buttonScale = create("UIScale", { Scale = 1 }, button)
 	textLabel(button, {
@@ -1187,12 +1212,14 @@ function Window:SetVisible(visible)
 	self._visibleToken += 1
 	local token = self._visibleToken
 	local scale = self._scale
+	self:_setCursorFree(visible)
 	if visible then
 		self.UIScale.Scale = scale * 0.92
 		self.Main.Visible = true
 		tween(self.UIScale, 0.34, { Scale = scale }, Enum.EasingStyle.Back)
 	else
 		self:_closePopup()
+		self.FxLayer:ClearAllChildren()
 		tween(self.UIScale, 0.18, { Scale = scale * 0.92 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		task.delay(0.18, function()
 			if token == self._visibleToken and not self.Destroyed then
@@ -1200,6 +1227,28 @@ function Window:SetVisible(visible)
 				self.UIScale.Scale = scale
 			end
 		end)
+	end
+end
+
+-- while the window is open the mouse is free, even if the game locks it to the centre of the screen
+function Window:_setCursorFree(free)
+	free = free and true or false
+	if self._cursorFree == free then return end
+	self._cursorFree = free
+	local bindName = "QevrionCursor_" .. tostring(self.Name)
+	if self._modal then self._modal.Visible = free end
+	if free then
+		self._savedBehavior, self._savedIcon = UserInputService.MouseBehavior, UserInputService.MouseIconEnabled
+		pcall(function()
+			RunService:BindToRenderStep(bindName, Enum.RenderPriority.Last.Value + 1, function()
+				if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then UserInputService.MouseBehavior = Enum.MouseBehavior.Default end
+				if not UserInputService.MouseIconEnabled then UserInputService.MouseIconEnabled = true end
+			end)
+		end)
+	else
+		pcall(function() RunService:UnbindFromRenderStep(bindName) end)
+		if self._savedBehavior and self._savedBehavior ~= Enum.MouseBehavior.Default then UserInputService.MouseBehavior = self._savedBehavior end
+		if self._savedIcon == false then UserInputService.MouseIconEnabled = false end
 	end
 end
 
@@ -1457,6 +1506,10 @@ function Qevrion:CreateWindow(options)
 	}, gui)
 
 	pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+	-- a modal button frees the mouse in first person / locked-centre modes while the window is open
+	window._modal = create("TextButton", {
+		Name = "cursorUnlock", Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1, Text = "", Modal = true, Visible = false, Active = false,
+	}, gui)
 	gui.Parent = parentForGui()
 
 	-- dragging by the header
@@ -1473,7 +1526,7 @@ function Qevrion:CreateWindow(options)
 	-- one input listener per window: menu key, keybinds, key capture, popups, drags and the click effect
 	window:_connect(UserInputService.InputBegan, function(input, processed)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			if window._clickEffectEnabled and window._shown then window:_clickEffect(mouseLocation()) end
+			if window._clickEffectEnabled and window._shown and window.Main.Visible then window:_clickEffect(mouseLocation()) end
 		end
 		if window._capture then
 			window._capture:Capture(input)
@@ -1506,6 +1559,8 @@ function Qevrion:CreateWindow(options)
 			window._dragFn = nil
 		end
 	end)
+
+	window:_setCursorFree(window._shown)
 
 	return window
 end
