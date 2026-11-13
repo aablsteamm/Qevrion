@@ -1417,6 +1417,253 @@ function Window:CreateConfigTab(name, icon)
 	return tab
 end
 
+-- The loading menu (StarterGui.Qevrion.LoadingMenu, read from Studio 2026-11-13), wrapped in a CanvasGroup so it can fade.
+local LOADER_SPEC = {"ScreenGui","Qevrion_Loader",{ZIndexBehavior=E("ZIndexBehavior.Sibling")},{{"CanvasGroup","fader",{BackgroundTransparency=1,Size=U(1,0,1,0)},{{"Frame","LoadingMenu",{BackgroundColor3=C(0,0,0),BorderColor3=C(0,0,0),BorderSizePixel=0,Position=U(0.308275,0,0.330559,0),Size=U(0.382817,0,0.338882,0),Visible=false},{{"UIStroke","UIStroke",{Color=C(1,1,1),Thickness=3.6},{}},{"Frame","header",{BackgroundColor3=C(1,1,1),BorderColor3=C(0,0,0),BorderSizePixel=0,Position=U(0,0,-0.0736842,0),Size=U(0,606,0,21)},{{"UIStroke","UIStroke",{Color=C(1,1,1),Thickness=3.6},{}},{"UIGradient","UIGradient",{Color=CS({0,0.00784314,0.333333,0.890196,1,0.211765,0.588235,0.988235})},{}},{"ImageLabel","cmdIcon",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,ImageContent=CT("rbxassetid://138637801813831"),Position=U(0,0,-0.47619,0),ScaleType=E("ScaleType.Fit"),Size=U(0.0594059,0,1.95238,0)},{}},{"TextLabel","TextLabel",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,FontFace=F("rbxasset://fonts/families/Inconsolata.json","Heavy","Normal"),Position=U(0.0775578,0,0.142857,0),Size=U(0.310231,0,0.714286,0),Text="Qevrion Rivals.lua",TextColor3=C(1,1,1),TextSize=14,TextXAlignment=E("TextXAlignment.Left")},{}}}},{"UIShadow","UIShadow",{BlurRadius=D(0,15)},{}},{"Frame","body",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,Size=U(0,606,0,285)},{{"Frame","texts",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,Size=U(0.59901,0,1,0)},{{"Frame","container",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,Position=U(0.0661157,0,0.0982456,0),Size=U(0.8,0,0.8,0)},{{"UIListLayout","UIListLayout",{Padding=D(0.02,0),SortOrder=E("SortOrder.LayoutOrder")},{}},{"TextLabel","textTemplate",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,FontFace=F("rbxassetid://12187362578","Medium","Normal"),Size=U(1,0,0.0789474,0),Text="Loading...",TextColor3=C(1,1,1),TextSize=14,TextXAlignment=E("TextXAlignment.Left")},{}}}}}},{"Frame","picContainer",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,Position=U(0.60066,0,0,0),Size=U(0.39934,0,1,0)},{{"ImageLabel","pic",{BackgroundColor3=C(1,1,1),BackgroundTransparency=1,BorderColor3=C(0,0,0),BorderSizePixel=0,ImageContent=CT("rbxassetid://74031475946698"),ImageTransparency=0.6,ScaleType=E("ScaleType.Fit"),Size=U(1,0,1,0)},{{"UIShadow","UIShadow",{BlurRadius=D(0,100),Color=C(1,1,1),Transparency=0.87},{}}}}}}}}}}}}}}
+
+-- ------------------------------------------------------------------ loader (Windows XP command prompt)
+-- Lines are typed one character at a time. Steps finish with a coloured tag: [ OK ], [WARN] or [FAIL].
+
+local Loader = {}
+Loader.__index = Loader
+
+-- the design's "bg" ColorCorrection in Lighting: Brightness -0.2, TintColor 0.478 grey
+local LOADER_BACKDROP = { Brightness = -0.2, TintColor = Color3.new(0.478431, 0.478431, 0.478431) }
+local TAG_COLORS = { ok = "5CFF7A", warn = "FFD84A", fail = "FF5C5C", note = "A8A8A8" }
+local TAG_TEXT = { ok = "[ OK ]", warn = "[WARN]", fail = "[FAIL]" }
+
+local function escapeRich(text)
+	return (text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+
+-- the first `count` characters of a line made of coloured segments, as rich text
+local function renderSegments(segments, count, cursor)
+	local parts, left = {}, count
+	for _, segment in ipairs(segments) do
+		if left <= 0 then break end
+		local piece = segment.text:sub(1, left)
+		left -= #piece
+		piece = escapeRich(piece)
+		if segment.color then piece = string.format('<font color="#%s">%s</font>', segment.color, piece) end
+		parts[#parts + 1] = piece
+	end
+	if cursor then parts[#parts + 1] = "_" end
+	return table.concat(parts)
+end
+
+local Step = {}
+Step.__index = Step
+
+local function finishStep(step, kind, note)
+	if step.done then return step end
+	step.done = true
+	local loader = step.loader
+	if loader.Pending == step then loader.Pending = nil end
+	loader:_push(step.line, { text = "  " .. TAG_TEXT[kind], color = TAG_COLORS[kind] })
+	if note and note ~= "" then loader:_push(step.line, { text = " " .. tostring(note), color = TAG_COLORS.note }) end
+	return step
+end
+
+function Step:Ok(note) return finishStep(self, "ok", note) end
+function Step:Warn(note) return finishStep(self, "warn", note) end
+function Step:Fail(note) return finishStep(self, "fail", note) end
+
+function Loader:_push(line, segment)
+	if self._destroyed then return end
+	self._queue[#self._queue + 1] = { line = line, segment = segment }
+	if not self._typing then
+		self._typing = true
+		task.spawn(function() self:_work() end)
+	end
+end
+
+function Loader:_capacity()
+	local container = self.Container
+	local gap = container.UIListLayout.Padding.Scale * container.AbsoluteSize.Y
+	local height = self.Template.Size.Y.Scale * container.AbsoluteSize.Y
+	if height <= 0 then return 10 end
+	return math.max(3, math.floor((container.AbsoluteSize.Y + gap) / (height + gap)))
+end
+
+function Loader:_ensureLabel(line)
+	if line.label then return line.label end
+	self._order += 1
+	local label = self.Template:Clone()
+	label.Name = "line"
+	label.Visible = true
+	label.Text = ""
+	label.RichText = true
+	label.TextTruncate = Enum.TextTruncate.AtEnd
+	label.LayoutOrder = self._order
+	label.Parent = self.Container
+	line.label = label
+	self.Lines[#self.Lines + 1] = line
+	-- the container is a fixed height: the oldest line scrolls off the top
+	local capacity = self:_capacity()
+	while #self.Lines > capacity do
+		local old = table.remove(self.Lines, 1)
+		if old.label then old.label:Destroy() end
+	end
+	return label
+end
+
+function Loader:_work()
+	while #self._queue > 0 and not self._destroyed do
+		local job = table.remove(self._queue, 1)
+		local line, segment = job.line, job.segment
+		local label = self:_ensureLabel(line)
+		line.segments[#line.segments + 1] = segment
+		-- keeps up when a lot of lines are waiting
+		local backlog = #self._queue
+		local perFrame = backlog > 8 and 6 or backlog > 4 and 3 or 1
+		local total = #segment.text
+		for index = 1, total do
+			if self._destroyed then return end
+			line.typed += 1
+			label.Text = renderSegments(line.segments, line.typed, true)
+			local char = segment.text:sub(index, index)
+			if index % perFrame == 0 then
+				task.wait()
+				if perFrame == 1 and (char == "." or char == "," or char == ":") and math.random() < 0.4 then task.wait() end
+			end
+		end
+		label.Text = renderSegments(line.segments, line.typed, false)
+		self.Tail = line
+	end
+	self._typing = false
+end
+
+function Loader:_newLine()
+	return { segments = {}, typed = 0 }
+end
+
+-- a new line, typed out. The previous step is finished as OK if nobody finished it
+function Loader:Step(text)
+	if self._destroyed then return setmetatable({ loader = self, done = true }, Step) end
+	if self.Pending then self.Pending:Ok() end
+	local line = self:_newLine()
+	local step = setmetatable({ loader = self, line = line, done = false }, Step)
+	self.Pending = step
+	self:_push(line, { text = tostring(text) })
+	return step
+end
+
+-- a line without a status tag
+function Loader:Info(text, kind)
+	if self._destroyed then return end
+	if self.Pending then self.Pending:Ok() end
+	self:_push(self:_newLine(), { text = tostring(text), color = kind and TAG_COLORS[kind] or nil })
+end
+
+function Loader:Ok(note) if self.Pending then self.Pending:Ok(note) end end
+function Loader:Warn(note) if self.Pending then self.Pending:Warn(note) end end
+function Loader:Fail(note) if self.Pending then self.Pending:Fail(note) end end
+
+-- waits until everything queued has been typed
+function Loader:Flush(timeout)
+	local started = os.clock()
+	while (#self._queue > 0 or self._typing) and not self._destroyed and os.clock() - started < (timeout or 12) do
+		task.wait(0.03)
+	end
+end
+
+function Loader:Destroy()
+	if self._destroyed then return end
+	self._destroyed = true
+	if env.__QEVRION_LOADER == self then env.__QEVRION_LOADER = nil end
+	if self.Backdrop then
+		local backdrop = self.Backdrop
+		self.Backdrop = nil
+		pcall(function() backdrop:Destroy() end)
+	end
+	if self.Gui then
+		local gui = self.Gui
+		self.Gui = nil
+		pcall(function() gui:Destroy() end)
+	end
+end
+
+-- finishes the pending step, lets the typing end, then fades the menu and the backdrop out
+function Loader:Close(holdSeconds)
+	if self._destroyed or self._closing then return end
+	self._closing = true
+	if self.Pending then self.Pending:Ok() end
+	self:Flush()
+	task.wait(holdSeconds or 0.7)
+	if self._destroyed then return end
+	local menu = self.Gui.fader.LoadingMenu
+	tween(self.Gui.fader, 0.35, { GroupTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	tween(menu.UIScale, 0.35, { Scale = 0.94 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	if self.Backdrop then tween(self.Backdrop, 0.45, { Brightness = 0, TintColor = Color3.new(1, 1, 1) }, Enum.EasingStyle.Quad) end
+	task.wait(0.5)
+	self:Destroy()
+end
+
+-- fatal problem: shows the reason, keeps the menu up long enough to read it, then closes
+function Loader:Abort(reason)
+	if self._destroyed then return end
+	if self.Pending then self.Pending:Fail() end
+	self:Info(tostring(reason), "fail")
+	self:Info("Qevrion did not start. Nothing was changed.", "note")
+	self:Close(4)
+end
+
+function Qevrion:CreateLoader(options)
+	options = options or {}
+	if env.__QEVRION_LOADER and env.__QEVRION_LOADER.Destroy then pcall(env.__QEVRION_LOADER.Destroy, env.__QEVRION_LOADER) end
+
+	local gui = build(LOADER_SPEC)
+	gui.Name = "Qevrion_Loader"
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 200
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	local fader = gui.fader
+	fader.GroupTransparency = 1
+	local menu = fader.LoadingMenu
+	-- the design's pixel size, centred (the design's own scale values belong to its preview viewport)
+	menu.AnchorPoint = Vector2.new(0.5, 0.5)
+	menu.Position = UDim2.fromScale(0.5, 0.5)
+	menu.Size = UDim2.fromOffset(606, 285)
+	menu.Visible = true
+	create("UIScale", { Scale = 0.94 }, menu)
+	if options.Title then menu.header.TextLabel.Text = tostring(options.Title) end
+
+	local container = menu.body.texts.container
+	local template = container.textTemplate
+	template.Visible = false
+	pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+
+	local loader = setmetatable({
+		Gui = gui, Container = container, Template = template, Lines = {}, Tail = nil, Pending = nil,
+		_queue = {}, _typing = false, _order = 0, _destroyed = false, _closing = false,
+	}, Loader)
+
+	local backdrop = Instance.new("ColorCorrectionEffect")
+	backdrop.Name = "Qevrion_bg"
+	backdrop.Parent = game:GetService("Lighting")
+	loader.Backdrop = backdrop
+
+	gui.Parent = parentForGui()
+	env.__QEVRION_LOADER = loader
+	tween(fader, 0.3, { GroupTransparency = 0 }, Enum.EasingStyle.Quad)
+	tween(menu.UIScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+	tween(backdrop, 0.45, LOADER_BACKDROP, Enum.EasingStyle.Quad)
+
+	-- blinking cursor at the end of the last line while nothing is being typed
+	task.spawn(function()
+		local on = true
+		while not loader._destroyed do
+			task.wait(0.5)
+			local tail = loader.Tail
+			if tail and tail.label and tail.label.Parent and not loader._typing and #loader._queue == 0 then
+				on = not on
+				tail.label.Text = renderSegments(tail.segments, tail.typed, on)
+			end
+		end
+	end)
+	return loader
+end
+
 -- ------------------------------------------------------------------ CreateWindow
 
 function Qevrion:CreateWindow(options)
