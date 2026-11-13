@@ -143,8 +143,17 @@ local function textLabel(parent, props)
 	return create("TextLabel", base, parent)
 end
 
+local GuiService = game:GetService("GuiService")
+
+-- AbsolutePosition is measured from below the top bar, GetMouseLocation from the top of the screen
 local function mouseLocation()
-	return UserInputService:GetMouseLocation()
+	return UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
+end
+
+-- a point in AbsolutePosition space as a Position inside the window's ScreenGui
+local function guiLocal(window, x, y)
+	local origin = window.Gui.AbsolutePosition
+	return UDim2.fromOffset(x - origin.X, y - origin.Y)
 end
 
 local function insideGui(gui, point)
@@ -488,15 +497,15 @@ function Group:CreateDropdown(opts)
 		list.Visible = true
 		list.ZIndex = 100
 		list.AnchorPoint = Vector2.new(1, 0)
-		list.Size = UDim2.fromOffset(math.max(pill.AbsoluteSize.X / scale, 120), visibleItems * 32 + 8)
-		list.Position = UDim2.fromOffset(pill.AbsolutePosition.X + pill.AbsoluteSize.X, pill.AbsolutePosition.Y + pill.AbsoluteSize.Y + 6)
+		local fullSize = UDim2.fromOffset(math.max(pill.AbsoluteSize.X / scale, 120), visibleItems * 32 + 8)
+		list.Size = UDim2.new(fullSize.X.Scale, fullSize.X.Offset, 0, 0)
+		list.Position = guiLocal(window, pill.AbsolutePosition.X + pill.AbsoluteSize.X, pill.AbsolutePosition.Y + pill.AbsoluteSize.Y + 6)
 		list.CanvasSize = UDim2.fromOffset(0, count * 32 + 8)
 		list.ScrollingDirection = Enum.ScrollingDirection.Y
 		local layout = list:FindFirstChildOfClass("UIListLayout")
 		if layout then layout.Padding = UDim.new(0, 3) end
 		create("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4) }, list)
-		local uiScale = create("UIScale", { Scale = scale * 0.9 }, list)
-		tween(uiScale, 0.16, { Scale = scale }, Enum.EasingStyle.Quad)
+		create("UIScale", { Scale = scale }, list)
 		for index, option in ipairs(element.Options) do
 			local item = window.Templates.option:Clone()
 			item.Name = option
@@ -515,6 +524,8 @@ function Group:CreateDropdown(opts)
 			end)
 		end
 		list.Parent = window.Gui
+		-- opens from the top down
+		tween(list, 0.24, { Size = fullSize }, Enum.EasingStyle.Quint)
 		window:_setPopup(list, pill)
 	end
 	hit.Activated:Connect(function()
@@ -539,7 +550,13 @@ function Group:CreateDropdown(opts)
 		self.Options = {}
 		for _, option in ipairs(list) do self.Options[#self.Options + 1] = tostring(option) end
 		if not allowCustom and not table.find(self.Options, self.Value) then
-			self:Set(self.Options[1] or "", true)
+			if self.Options[1] then
+				self:Set(self.Options[1], true)
+			else
+				self.Value = ""
+				if self.Flag then self.Window.Flags[self.Flag] = "" end
+				self:Render()
+			end
 		end
 	end
 	local default = opts.Default
@@ -689,7 +706,7 @@ function Group:CreateColorPicker(opts)
 		local window = element.Window
 		local frame = newPopup(window, UDim2.fromOffset(196, 176))
 		frame.AnchorPoint = Vector2.new(1, 0)
-		frame.Position = UDim2.fromOffset(pill.AbsolutePosition.X + pill.AbsoluteSize.X, pill.AbsolutePosition.Y + pill.AbsoluteSize.Y + 6)
+		frame.Position = guiLocal(window, pill.AbsolutePosition.X + pill.AbsoluteSize.X, pill.AbsolutePosition.Y + pill.AbsoluteSize.Y + 6)
 
 		local square = create("Frame", { Position = UDim2.fromOffset(10, 10), Size = UDim2.fromOffset(176, 104), BorderSizePixel = 0 }, frame)
 		addCorner(square, UDim.new(0, 6))
@@ -981,23 +998,27 @@ function Window:_connect(signal, fn)
 	return connection
 end
 
--- the sidebar is 338 px tall; shrink the buttons so every tab is visible (the list still scrolls if it must)
-function Window:_layoutTabButtons(count)
-	local gap, available = 4, 318
-	local size = math.clamp(math.floor((available - gap * (count - 1)) / count), 38, 65)
+-- buttons keep the design's 65 px; the sidebar scrolls and follows the selected tab
+local TAB_SIZE, TAB_GAP, TAB_TOP = 65, 6, 5
+
+function Window:_layoutTabButtons()
 	local layout = self.TabList:FindFirstChildOfClass("UIListLayout")
-	if layout then layout.Padding = UDim.new(0, gap) end
+	if layout then layout.Padding = UDim.new(0, TAB_GAP) end
 	for _, button in ipairs(self.TabList:GetChildren()) do
-		if button:IsA("GuiButton") then
-			button.Size = UDim2.fromOffset(size, size)
-			local caption = button:FindFirstChild("caption")
-			if caption then
-				caption.TextSize = size < 52 and 8 or 11
-				caption.Position = UDim2.new(0, 0, 1, size < 52 and -11 or -17)
-				caption.Size = UDim2.new(1, 0, 0, size < 52 and 10 or 14)
-			end
-		end
+		if button:IsA("GuiButton") then button.Size = UDim2.fromOffset(TAB_SIZE, TAB_SIZE) end
 	end
+end
+
+function Window:_scrollTabIntoView(tab)
+	local list = self.Main:FindFirstChild("tabsToggles")
+	local index = table.find(self.Tabs, tab)
+	if not list or not index or self.Destroyed then return end
+	local scale = self.UIScale.Scale
+	local viewHeight = list.AbsoluteWindowSize.Y / scale
+	local canvasHeight = list.AbsoluteCanvasSize.Y / scale
+	local centre = TAB_TOP + (index - 1) * (TAB_SIZE + TAB_GAP) + TAB_SIZE / 2
+	local target = math.clamp(centre - viewHeight / 2, 0, math.max(0, canvasHeight - viewHeight))
+	tween(list, 0.3, { CanvasPosition = Vector2.new(0, target) }, Enum.EasingStyle.Quad)
 end
 
 function Window:CreateTab(name, icon)
@@ -1009,18 +1030,22 @@ function Window:CreateTab(name, icon)
 	local button = self.Templates.tab:Clone()
 	button.Name = name
 	button.LayoutOrder = #self.Tabs + 1
+	local hasIcon = false
 	if type(icon) == "number" then
 		applyImage(button, "rbxassetid://" .. icon)
+		hasIcon = true
 	elseif type(icon) == "string" and icon:match("^rbxassetid://") then
 		applyImage(button, icon)
+		hasIcon = true
 	end
 	local buttonScale = create("UIScale", { Scale = 1 }, button)
 	textLabel(button, {
 		Name = "caption", Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 1, -17), Text = name,
 		FontFace = labelFont(Enum.FontWeight.Medium), TextSize = 11, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3,
 	})
+	button:FindFirstChild("caption").Visible = not hasIcon
 	button.Parent = self.TabList
-	self:_layoutTabButtons(#self.Tabs + 1)
+	self:_layoutTabButtons()
 
 	-- content: a CanvasGroup (so the whole page can fade) holding a scrolling list laid out by the design's grid
 	local host = create("CanvasGroup", {
@@ -1102,6 +1127,7 @@ function Window:SelectTab(name)
 	entering.GroupTransparency = 1
 	entering.Visible = true
 	tween(entering, 0.38, { GroupTransparency = 0, Position = hostBase })
+	task.defer(function() self:_scrollTabIntoView(target) end)
 end
 
 function Window:Notify(text, seconds)
@@ -1132,6 +1158,7 @@ end
 
 -- white dots with a white UIShadow, thrown out from the click point, gone after 1.5 seconds
 function Window:_clickEffect(point)
+	point = point - self.FxLayer.AbsolutePosition
 	local count = 9
 	local offsetAngle = math.random() * math.pi * 2
 	for i = 1, count do
@@ -1228,7 +1255,18 @@ end
 function Window:_closePopup()
 	local popup = self._popup
 	self._popup = nil
-	if popup and popup.frame then popup.frame:Destroy() end
+	if not (popup and popup.frame) then return end
+	local frame = popup.frame
+	if frame.Name == "dropdown" and not self.Destroyed then
+		-- closes bottom up, and stops taking clicks while it does
+		tween(frame, 0.14, { Size = UDim2.new(frame.Size.X.Scale, frame.Size.X.Offset, 0, 0) }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		task.delay(0.16, function() frame:Destroy() end)
+		for _, item in ipairs(frame:GetChildren()) do
+			if item:IsA("GuiButton") then item.Active = false end
+		end
+	else
+		frame:Destroy()
+	end
 end
 
 function Window:Destroy()
@@ -1391,6 +1429,8 @@ function Qevrion:CreateWindow(options)
 	local tabsToggles = main.tabsToggles
 	tabsToggles.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	tabsToggles.CanvasSize = UDim2.new()
+	tabsToggles.ScrollBarThickness = 3
+	tabsToggles.ScrollingDirection = Enum.ScrollingDirection.Y
 	window.TabList = tabsToggles.Frame
 
 	local header = main.header
@@ -1423,8 +1463,8 @@ function Qevrion:CreateWindow(options)
 		local start = mouseLocation()
 		local grabX, grabY = start.X - main.AbsolutePosition.X, start.Y - main.AbsolutePosition.Y
 		window._dragFn = function(point)
-			local size = main.AbsoluteSize
-			main.Position = UDim2.fromOffset(point.X - grabX + size.X / 2, point.Y - grabY + size.Y / 2)
+			local size, origin = main.AbsoluteSize, gui.AbsolutePosition
+			main.Position = UDim2.fromOffset(point.X - grabX - origin.X + size.X / 2, point.Y - grabY - origin.Y + size.Y / 2)
 		end
 	end)
 
